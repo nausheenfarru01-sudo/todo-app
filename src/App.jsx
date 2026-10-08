@@ -1,92 +1,114 @@
-import { useMemo, useState } from "react";
-import TodoInput from "./components/TodoInput";
-import TodoList from "./components/TodoList";
-import TodoFilters from "./components/TodoFilters";
-import { useLocalStorage } from "./hooks/useLocalStorage";
-import "./App.css";
+import { useRef } from "react";
+import { TaskProvider, useTasks } from "./store/TaskContext";
+import { FocusProvider } from "./store/FocusContext";
+import { useHotkeys } from "./hooks/useHotkeys";
+import { greeting } from "./lib/date";
+import { tasksForView } from "./lib/selectors";
+import Sidebar from "./components/Sidebar";
+import Header from "./components/Header";
+import Footer from "./components/Footer";
+import TaskDrawer from "./components/TaskDrawer";
+import CommandPalette from "./components/CommandPalette";
+import ShortcutsHelp from "./components/ShortcutsHelp";
+import SettingsModal from "./components/SettingsModal";
+import Toasts from "./components/Toasts";
+import Modal from "./components/Modal";
+import QuickAdd from "./components/QuickAdd";
+import Dashboard from "./views/Dashboard";
+import ListView from "./views/ListView";
+import BoardView from "./views/BoardView";
+import CalendarView from "./views/CalendarView";
+import FocusView from "./views/FocusView";
+import "./styles/app.css";
 
-const FILTERS = {
-  all: () => true,
-  active: (task) => !task.completed,
-  completed: (task) => task.completed,
-};
+function useViewTitle() {
+  const { state, route, today, search } = useTasks();
+  const longDate = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  const count = (name) => tasksForView(state.tasks, { name }, today).length;
+  switch (route.name) {
+    case "today":
+      return ["Today", `${longDate} · ${count("today")} to do`];
+    case "upcoming":
+      return ["Upcoming", `${count("upcoming")} scheduled tasks`];
+    case "inbox":
+      return ["Inbox", `${count("inbox")} open tasks`];
+    case "completed":
+      return ["Completed", `${count("completed")} tasks done. Nice work!`];
+    case "board":
+      return ["Board", "Plan your work in columns"];
+    case "calendar":
+      return ["Calendar", "Drag tasks to reschedule"];
+    case "focus":
+      return ["Focus", "One task at a time"];
+    case "search":
+      return ["Search", search ? `Results for “${search}”` : "Type to search"];
+    case "project":
+      return [state.projects.find((p) => p.id === route.id)?.name ?? "Project", "Project"];
+    case "tag":
+      return [`#${route.id}`, "Tagged tasks"];
+    default:
+      return [`${greeting()}, ${state.settings.name || "there"}`, longDate];
+  }
+}
 
-function App() {
-  const [tasks, setTasks] = useLocalStorage("todo-app.tasks", []);
-  const [filter, setFilter] = useState("all");
+function Shell() {
+  const { route, navigate, ui, setUI } = useTasks();
+  const searchRef = useRef(null);
+  const [title, subtitle] = useViewTitle();
 
-  const addTask = (text) => {
-    setTasks((prev) => [
-      { id: crypto.randomUUID(), text, completed: false, createdAt: Date.now() },
-      ...prev,
-    ]);
-  };
+  const open = (key, value = true) => setUI((u) => ({ ...u, [key]: value }));
+  useHotkeys({
+    "mod+k": () => setUI((u) => ({ ...u, palette: !u.palette })),
+    n: () => open("quickAdd", {}),
+    "/": () => searchRef.current?.focus(),
+    "?": () => open("help"),
+    "[": () => document.body.classList.toggle("sidebar-collapsed"),
+    escape: () => setUI((u) => ({ ...u, selectedId: null, sidebar: false })),
+    "g d": () => navigate("dashboard"),
+    "g t": () => navigate("today"),
+    "g u": () => navigate("upcoming"),
+    "g i": () => navigate("inbox"),
+    "g b": () => navigate("board"),
+    "g c": () => navigate("calendar"),
+    "g f": () => navigate("focus"),
+  });
 
-  const toggleTask = (id) => {
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)));
-  };
-
-  const editTask = (id, text) => {
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, text } : t)));
-  };
-
-  const deleteTask = (id) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  const clearCompleted = () => {
-    setTasks((prev) => prev.filter((t) => !t.completed));
-  };
-
-  const visibleTasks = useMemo(() => tasks.filter(FILTERS[filter]), [tasks, filter]);
-  const remaining = tasks.filter((t) => !t.completed).length;
-  const completed = tasks.length - remaining;
+  const View = { dashboard: Dashboard, board: BoardView, calendar: CalendarView, focus: FocusView }[route.name] ?? ListView;
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>To-Do List</h1>
-        <p className="subtitle">
-          {tasks.length === 0
-            ? "Nothing planned yet. Add your first task below."
-            : `${remaining} of ${tasks.length} tasks left`}
-        </p>
-        {tasks.length > 0 && (
-          <div
-            className="progress"
-            role="progressbar"
-            aria-label="Tasks completed"
-            aria-valuemin={0}
-            aria-valuemax={tasks.length}
-            aria-valuenow={completed}
-          >
-            <div className="progress-bar" style={{ width: `${(completed / tasks.length) * 100}%` }} />
-          </div>
-        )}
-      </header>
+    <div className="shell">
+      <Sidebar />
+      <div className="main">
+        <Header ref={searchRef} title={title} subtitle={subtitle} />
+        <main className="content" key={`${route.name}-${route.id ?? ""}`}>
+          <View />
+        </main>
+        <Footer />
+      </div>
 
-      <TodoInput addTask={addTask} />
-
-      {tasks.length > 0 && (
-        <TodoFilters
-          filter={filter}
-          onChange={setFilter}
-          remaining={remaining}
-          completed={completed}
-          onClearCompleted={clearCompleted}
-        />
+      <TaskDrawer />
+      {ui.quickAdd && (
+        <Modal title="New task" onClose={() => open("quickAdd", null)} className="quick-add-modal">
+          <QuickAdd autoFocus defaults={ui.quickAdd} onAdded={() => open("quickAdd", null)} />
+          <p className="muted small">
+            Tip: type <code>tomorrow</code>, <code>!high</code>, <code>#tag</code> or <code>@Project</code> right in the title.
+          </p>
+        </Modal>
       )}
-
-      <TodoList
-        tasks={visibleTasks}
-        filter={filter}
-        hasTasks={tasks.length > 0}
-        onToggle={toggleTask}
-        onEdit={editTask}
-        onDelete={deleteTask}
-      />
-    </main>
+      {ui.palette && <CommandPalette />}
+      {ui.help && <ShortcutsHelp />}
+      {ui.settings && <SettingsModal />}
+      <Toasts />
+    </div>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <TaskProvider>
+      <FocusProvider>
+        <Shell />
+      </FocusProvider>
+    </TaskProvider>
+  );
+}
